@@ -68,7 +68,7 @@ describe("buildCreateTonPool", () => {
 });
 
 describe("buildWithdrawMessage", () => {
-  it("uses MIN_WITHDRAW_GAS by default and encodes the withdraw opcode", () => {
+  it("defaults to MIN_WITHDRAW_GAS plus headroom and encodes the withdraw opcode", () => {
     const m = buildWithdrawMessage({
       poolAddress: POOL_ADDR,
       root: 12345n,
@@ -76,7 +76,7 @@ describe("buildWithdrawMessage", () => {
       recipient: USER_ADDR,
       proofCell: beginCell().endCell(),
     });
-    expect(m.value).toBe(MIN_WITHDRAW_GAS);
+    expect(m.value).toBe(MIN_WITHDRAW_GAS + 50_000_000n);
     expect(m.payload.beginParse().loadUint(32)).toBe(OP_WITHDRAW);
   });
 
@@ -194,7 +194,7 @@ describe("buildDepositJetton", () => {
 });
 
 describe("buildDepositTon", () => {
-  it("attaches denomination + MIN_DEPOSIT_VALUE and targets the pool directly", () => {
+  it("attaches denomination + MIN_DEPOSIT_VALUE + headroom and targets the pool directly", () => {
     const payload = buildTonDepositPayloadCell({
       fromUser: USER_ADDR,
       commitment: 1n,
@@ -208,7 +208,7 @@ describe("buildDepositTon", () => {
       depositPayload: payload,
     });
     expect(m.address).toBe(POOL_ADDR);
-    expect(m.value).toBe(10_000_000_000n + MIN_DEPOSIT_VALUE);
+    expect(m.value).toBe(10_000_000_000n + MIN_DEPOSIT_VALUE + 50_000_000n);
     expect(m.payload.beginParse().loadUint(32)).toBe(OP_DEPOSIT);
   });
 });

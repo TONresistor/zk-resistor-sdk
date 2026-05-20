@@ -126,7 +126,7 @@ export interface DepositTonOptions {
 export function buildDepositTon(opts: DepositTonOptions): BuiltMessage {
   return {
     address: opts.poolAddress,
-    value: opts.value ?? opts.denomination + MIN_DEPOSIT_VALUE,
+    value: opts.value ?? opts.denomination + MIN_DEPOSIT_VALUE + 50_000_000n,
     payload: opts.depositPayload,
   };
 }
@@ -174,7 +174,7 @@ export function buildWithdrawMessage(opts: WithdrawOptions): BuiltMessage {
     .endCell();
   return {
     address: opts.poolAddress,
-    value: opts.value ?? MIN_WITHDRAW_GAS,
+    value: opts.value ?? MIN_WITHDRAW_GAS + 50_000_000n,
     payload,
   };
 }
