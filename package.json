@@ -1,0 +1,70 @@
+{
+  "name": "@tonresistor/zkresistor-sdk",
+  "version": "1.0.0",
+  "description": "TypeScript SDK for ZKResistor, a trustless ZK privacy pool on TON. Builds messages, generates proofs, reads pool state.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "files": ["dist", "README.md", "LICENSE"],
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm,cjs --dts --clean",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit",
+    "prepublishOnly": "npm run lint && npm run test && npm run build"
+  },
+  "dependencies": {
+    "@noble/curves": "^2.2.0",
+    "snarkjs": "^0.7.5"
+  },
+  "peerDependencies": {
+    "@ton/core": ">=0.60.0 <1.0.0"
+  },
+  "devDependencies": {
+    "@ton/core": "^0.63.0",
+    "@types/node": "^22.10.0",
+    "tsup": "^8.3.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "ton",
+    "zk",
+    "zero-knowledge",
+    "privacy",
+    "mixer",
+    "groth16",
+    "bls12-381",
+    "poseidon",
+    "tornado"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TONresistor/zk-resistor-sdk.git"
+  },
+  "bugs": {
+    "url": "https://github.com/TONresistor/zk-resistor-sdk/issues"
+  },
+  "homepage": "https://zk.resistance.dog"
+}
