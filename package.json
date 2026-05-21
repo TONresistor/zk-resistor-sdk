@@ -1,6 +1,6 @@
 {
   "name": "@tonresistor/zkresistor-sdk",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "TypeScript SDK for ZKResistor, a trustless ZK privacy pool on TON. Builds messages, generates proofs, reads pool state.",
   "license": "MIT",
   "type": "module",

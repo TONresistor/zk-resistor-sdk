@@ -1,7 +1,8 @@
 import { Address, beginCell, Cell, Dictionary } from "@ton/core";
 import { TREE_CAPACITY } from "./constants.js";
-import type { Client, RunMethodResult } from "./client.js";
+import type { Client } from "./client.js";
 import { readBigInt, readAddrFromB64 } from "./stack.js";
+import { parseJettonPoolStorage, parseTonPoolStorage } from "./storage.js";
 import type { JettonPoolInfo, PoolInfo, TonPoolInfo } from "./types.js";
 
 interface FactoryRegistries {
@@ -44,44 +45,25 @@ export async function readRegistries(
   };
 }
 
-async function run(
-  client: Client,
-  address: string,
-  method: string,
-): Promise<RunMethodResult> {
-  return client.runMethod(address, method, []);
-}
+const POOL_READ_CONCURRENCY = 4;
 
-async function readJettonPoolGetters(client: Client, address: string) {
-  const [jm, den, idx, root, jw] = await Promise.all([
-    run(client, address, "jettonMaster"),
-    run(client, address, "denomination"),
-    run(client, address, "nextIndex"),
-    run(client, address, "currentRoot"),
-    run(client, address, "jettonWallet"),
-  ]);
-  return {
-    jettonMaster: readAddrFromB64(jm.stack[0] ?? null) ?? "",
-    denomination: readBigInt(den.stack[0] ?? null),
-    nextIndex: Number(readBigInt(idx.stack[0] ?? null)),
-    currentRoot: readBigInt(root.stack[0] ?? null),
-    jettonWallet: readAddrFromB64(jw.stack[0] ?? null),
-  };
-}
-
-async function readTonPoolGetters(client: Client, address: string) {
-  const [den, idx, root, locked] = await Promise.all([
-    run(client, address, "denomination"),
-    run(client, address, "nextIndex"),
-    run(client, address, "currentRoot"),
-    run(client, address, "pendingWithdrawTon"),
-  ]);
-  return {
-    denomination: readBigInt(den.stack[0] ?? null),
-    nextIndex: Number(readBigInt(idx.stack[0] ?? null)),
-    currentRoot: readBigInt(root.stack[0] ?? null),
-    pendingWithdrawTon: readBigInt(locked.stack[0] ?? null),
-  };
+async function mapWithLimit<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  async function worker(): Promise<void> {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i]!);
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, () => worker()),
+  );
+  return results;
 }
 
 export interface JettonMeta {
@@ -95,6 +77,8 @@ export interface ListPoolsOptions {
   resolveJettonMeta?: (jettonMaster: string) => Promise<JettonMeta>;
 }
 
+// Per pool: one getAccountState plus a local storage decode. Network errors
+// propagate; a genuinely uninitialized account is skipped.
 export async function listPools(
   client: Client,
   factoryAddress: string,
@@ -103,50 +87,50 @@ export async function listPools(
   const { jettonPools, tonPools } = await readRegistries(client, factoryAddress);
   const meta = options.resolveJettonMeta ?? defaultJettonMeta;
 
-  const jettonResults = await Promise.all(
-    jettonPools.map(async (poolAddress): Promise<PoolInfo | null> => {
-      try {
-        const g = await readJettonPoolGetters(client, poolAddress);
-        const m = await meta(g.jettonMaster);
-        const info: JettonPoolInfo = {
-          kind: "jetton",
-          poolAddress,
-          jettonMaster: g.jettonMaster,
-          jettonSymbol: m.symbol,
-          jettonDecimals: m.decimals,
-          jettonImage: m.image,
-          jettonName: m.name,
-          denomination: g.denomination,
-          nextIndex: g.nextIndex,
-          capacity: TREE_CAPACITY,
-          currentRoot: g.currentRoot,
-          jettonWallet: g.jettonWallet,
-        };
-        return info;
-      } catch {
-        return null;
-      }
-    }),
+  const jettonResults = await mapWithLimit(
+    jettonPools,
+    POOL_READ_CONCURRENCY,
+    async (poolAddress): Promise<PoolInfo | null> => {
+      const acc = await client.getAccountState(poolAddress);
+      if (acc.status !== "active" || !acc.data) return null;
+      const s = parseJettonPoolStorage(acc.data);
+      const m = await meta(s.jettonMaster);
+      const info: JettonPoolInfo = {
+        kind: "jetton",
+        poolAddress,
+        jettonMaster: s.jettonMaster,
+        jettonSymbol: m.symbol,
+        jettonDecimals: m.decimals,
+        jettonImage: m.image,
+        jettonName: m.name,
+        denomination: s.denomination,
+        nextIndex: s.nextIndex,
+        capacity: TREE_CAPACITY,
+        currentRoot: s.currentRoot,
+        jettonWallet: s.jettonWallet,
+      };
+      return info;
+    },
   );
 
-  const tonResults = await Promise.all(
-    tonPools.map(async (poolAddress): Promise<PoolInfo | null> => {
-      try {
-        const g = await readTonPoolGetters(client, poolAddress);
-        const info: TonPoolInfo = {
-          kind: "ton",
-          poolAddress,
-          denomination: g.denomination,
-          nextIndex: g.nextIndex,
-          capacity: TREE_CAPACITY,
-          currentRoot: g.currentRoot,
-          pendingWithdrawTon: g.pendingWithdrawTon,
-        };
-        return info;
-      } catch {
-        return null;
-      }
-    }),
+  const tonResults = await mapWithLimit(
+    tonPools,
+    POOL_READ_CONCURRENCY,
+    async (poolAddress): Promise<PoolInfo | null> => {
+      const acc = await client.getAccountState(poolAddress);
+      if (acc.status !== "active" || !acc.data) return null;
+      const s = parseTonPoolStorage(acc.data);
+      const info: TonPoolInfo = {
+        kind: "ton",
+        poolAddress,
+        denomination: s.denomination,
+        nextIndex: s.nextIndex,
+        capacity: TREE_CAPACITY,
+        currentRoot: s.currentRoot,
+        pendingWithdrawTon: s.pendingWithdrawTon,
+      };
+      return info;
+    },
   );
 
   return [...tonResults, ...jettonResults]

@@ -1,24 +1,25 @@
 import { Cell } from "@ton/core";
 import type { Client } from "./client.js";
 import { EVENT_DEPOSIT } from "./constants.js";
-import { readBigInt, readAddrFromB64 } from "./stack.js";
+import { parseJettonPoolStorage } from "./storage.js";
 import type { DepositEvent, JettonPoolState } from "./types.js";
 
 export async function readState(
   client: Client,
   poolAddress: string,
 ): Promise<JettonPoolState> {
-  const [root, idx, den, jw] = await Promise.all([
-    client.runMethod(poolAddress, "currentRoot", []),
-    client.runMethod(poolAddress, "nextIndex", []),
-    client.runMethod(poolAddress, "denomination", []),
-    client.runMethod(poolAddress, "jettonWallet", []),
-  ]);
+  const acc = await client.getAccountState(poolAddress);
+  if (acc.status !== "active" || !acc.data) {
+    throw new Error(
+      `Pool ${poolAddress} is not active (status: ${acc.status}).`,
+    );
+  }
+  const s = parseJettonPoolStorage(acc.data);
   return {
-    currentRoot: readBigInt(root.stack[0] ?? null),
-    nextIndex: Number(readBigInt(idx.stack[0] ?? null)),
-    denomination: readBigInt(den.stack[0] ?? null),
-    jettonWallet: readAddrFromB64(jw.stack[0] ?? null),
+    currentRoot: s.currentRoot,
+    nextIndex: s.nextIndex,
+    denomination: s.denomination,
+    jettonWallet: s.jettonWallet,
   };
 }
 
