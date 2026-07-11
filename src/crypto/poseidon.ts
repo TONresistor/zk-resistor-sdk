@@ -1,21 +1,24 @@
-import * as snarkjs from "snarkjs";
+import { WitnessCalculatorBuilder } from "circom_runtime";
 
 export type Poseidon2 = (a: bigint, b: bigint) => Promise<bigint>;
 
 export function createPoseidon2(wasm: Uint8Array): Poseidon2 {
-  return async (a, b) => {
-    const witness: { type: "mem"; data?: Uint8Array } = { type: "mem" };
-    await snarkjs.wtns.calculate(
-      { a: a.toString(), b: b.toString() },
-      wasm,
-      witness,
-    );
-    const json = await snarkjs.wtns.exportJson(witness);
-    const out = json[1];
-    if (out === undefined) {
-      throw new Error("poseidon2: missing output signal at witness slot 1");
-    }
-    return BigInt(out);
+  const calculator = WitnessCalculatorBuilder(wasm);
+  let queue: Promise<void> = Promise.resolve();
+  return (a, b) => {
+    const result = queue.then(async () => {
+      const witness = await (await calculator).calculateWitness(
+        { a: a.toString(), b: b.toString() },
+        false,
+      );
+      const out = witness[1];
+      if (out === undefined || out === null) {
+        throw new Error("poseidon2: missing output signal at witness slot 1");
+      }
+      return BigInt(out.toString());
+    });
+    queue = result.then(() => undefined, () => undefined);
+    return result;
   };
 }
 

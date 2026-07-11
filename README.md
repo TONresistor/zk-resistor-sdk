@@ -1,124 +1,80 @@
 # @tonresistor/zkresistor-sdk
 
-TypeScript SDK for ZKResistor, a trustless ZK privacy pool on TON. It builds the
-protocol messages, reads pool state, generates Merkle witnesses, and drives the
-deposit and withdraw flows. It is RPC-agnostic (you supply a small `Client`
-adapter) and prover-agnostic (snarkjs by default).
+TypeScript SDK for ZKResistor privacy pools on TON.
 
-The SDK never signs or broadcasts. Every builder returns an
-`{ address, value, payload }` triple for your own wallet integration.
-
-- Contracts: https://github.com/TONresistor/zk-resistor-contracts
-- App: https://zk.resistance.dog
-- License: MIT
+It reads contract state, reconstructs verified Merkle state, generates Groth16
+proofs, and builds protocol messages. It never selects a deployment, signs, or
+broadcasts; the application supplies the transport, persistence, wallet, and
+pool policy.
 
 ## Install
 
+Requires Node.js 20.19 or newer.
+
 ```bash
-npm install @tonresistor/zkresistor-sdk @ton/core
+npm install @tonresistor/zkresistor-sdk@2.0.0 @ton/core
 ```
 
-`@ton/core` is a peer dependency.
+## Select Pools
 
-## Deposit
+No Factory is hardcoded. Applications choose a Factory, filter its registry,
+or read a known pool directly:
 
 ```ts
-import {
-  prepareDeposit,
-  finalizeDeposit,
-  createPoseidon2,
-  createSnarkjsProver,
-} from "@tonresistor/zkresistor-sdk";
+import { Factory, Pool, TonPool } from "@tonresistor/zkresistor-sdk";
 
-const poseidon2 = createPoseidon2(hasherWasmBytes);
-const insertProver = createSnarkjsProver({
-  wasm: "/circuits/insert.wasm",
-  zkey: "/circuits/insert_final.zkey",
-});
+const pools = await Factory.listPools(client, factoryAddress);
+const visible = pools.filter((pool) =>
+  pool.kind === "jetton" &&
+  pool.jettonMaster === selectedJettonMaster &&
+  allowedPoolAddresses.has(pool.poolAddress),
+);
 
-// Phase 1 is instant and local. Show the note to the user before signing.
-const prep = await prepareDeposit(client, {
-  kind: "jetton",
-  poolAddress,
-  asset: "KITO",
-  denomination: 1_000_000_000_000n,
-  userAddress,
-  userJettonWallet,
-});
-console.log("Save this note:", prep.noteString);
-
-// Phase 2 generates the proof and builds the transaction.
-const plan = await finalizeDeposit(client, { prep, poseidon2, insertProver });
-await wallet.send(plan.message);
+const jettonState = await Pool.readState(client, jettonPoolAddress);
+const tonState = await TonPool.readState(client, tonPoolAddress);
 ```
 
-## Withdraw
+For several Factories, call `Factory.listPools()` for each address and retain
+the Factory address beside each result.
 
-```ts
-import {
-  buildWithdraw,
-  parseNote,
-  createPoseidon2,
-  createSnarkjsProver,
-} from "@tonresistor/zkresistor-sdk";
+## Protocol Flows
 
-const note = parseNote(savedNoteString);
-if (!note) throw new Error("Invalid note");
+- `prepareDeposit()` creates the secret note and deposit inputs. Persist
+  `prep.noteString` before requesting a wallet signature.
+- `finalizeDeposit()` creates the insert proof and message.
+- `buildWithdraw()` synchronizes verified state, creates the withdrawal proof,
+  and returns a wallet-ready message.
+- Message builders return `{ address, value, payload, queryId }`; the SDK never
+  handles private keys.
 
-const withdrawProver = createSnarkjsProver({
-  wasm: "/circuits/withdraw.wasm",
-  zkey: "/circuits/withdraw_final.zkey",
-});
+Withdrawals bind the complete recipient address and verify the exact Pool or
+TonPool code before proving. `relaySafe` is true only for this binding. Legacy
+binding requires explicit `legacySelfBroadcastOnly: true` and must never be
+shared with a relayer.
 
-const plan = await buildWithdraw(client, {
-  kind: note.asset === "TON" ? "ton" : "jetton",
-  note,
-  poolAddress,
-  recipientAddress,
-  poseidon2: createPoseidon2(hasherWasmBytes),
-  withdrawProver,
-});
+## Local State and Transport
 
-await wallet.send(plan.message);
+Flows use a caller-provided `Client` and `MerkleStateProvider`.
+`LocalMerkleStateProvider` replays successful on-chain events and checks state
+against pool heads and sparse roots before exposing paths. Transaction paging
+uses exclusive `{ lt, hash }` cursors and external-out messages as events.
+
+The depth-20 tree has `1,048,576` slots. Near full capacity, implement
+`MerkleStateProvider` over a compact local transactional database; the bundled
+in-memory provider is a reference implementation.
+
+The SDK does not bundle circuit files. Use the finalized ceremony WASM and
+proving keys matching the deployed verifier keys.
+
+## Development
+
+```bash
+npm ci
+npm run lint
+npm test
+npm run build
 ```
 
-The recipient is bound to the proof by construction, so anyone can broadcast the
-resulting message. The transaction sender receives the fixed relayer
-reimbursement.
+Contracts: [TONresistor/zk-resistor-contracts](https://github.com/TONresistor/zk-resistor-contracts)
 
-## The Client interface
-
-The SDK reads the chain through a small interface you implement once for your
-stack (tonutils-bridge, tonapi.io, ton-access, or a raw liteclient):
-
-```ts
-interface Client {
-  getAccountState(address: string): Promise<AccountState>;
-  runMethod(address: string, method: string, params: readonly RunMethodArg[]): Promise<RunMethodResult>;
-  getTransactions(address: string, limit: number): Promise<GetTransactionsResult>;
-}
-```
-
-The factory address is never hardcoded. Pass it explicitly to `Factory.listPools`
-and the other factory readers. The current deployment address is in the
-contracts repository.
-
-## Circuit artifacts
-
-The SDK does not bundle the ZK artifacts. Three files are needed at runtime,
-hosted wherever you choose:
-
-- `hasher.wasm`, the Poseidon BLS12-381 witness calculator.
-- `insert.wasm` and `insert_final.zkey`, the Merkle insertion circuit.
-- `withdraw.wasm` and `withdraw_final.zkey`, the withdraw membership circuit.
-
-Sources and build scripts are in the contracts repository under `circuits/`.
-In a browser, run the prover in a Web Worker so proof generation does not block
-the main thread.
-
-The current trusted setup is a solo Powers-of-Tau. A multi-party ceremony is
-planned.
-
-## License
-
-MIT, see LICENSE.
+MIT License. See [LICENSE](LICENSE).

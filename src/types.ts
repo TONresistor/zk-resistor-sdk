@@ -28,6 +28,8 @@ export interface JettonPoolState {
   nextIndex: number;
   denomination: bigint;
   jettonWallet: string | null;
+  relayerReserve: bigint;
+  withdrawalCount: number;
 }
 
 export interface TonPoolState {
@@ -35,6 +37,7 @@ export interface TonPoolState {
   nextIndex: number;
   denomination: bigint;
   pendingWithdrawTon: bigint;
+  relayerReserve: bigint;
 }
 
 export interface Note {
@@ -43,6 +46,19 @@ export interface Note {
   leafIndex: number;
   nullifier: bigint;
   secret: bigint;
+  /** Binds the secrets to the pool in which the commitment was inserted. */
+  poolAddress: string;
+  poolKind: "jetton" | "ton";
+}
+
+export interface PoolReadyEvent {
+  jettonWallet: string;
+}
+
+export interface FactoryPoolCreatedEvent {
+  jettonMaster: string | null;
+  denomination: bigint;
+  poolAddress: string;
 }
 
 export interface MerklePath {
@@ -74,6 +90,29 @@ export interface DepositEvent {
   commitment: bigint;
   newRoot: bigint;
   fromUser: string;
+  sparseUpdate: SparseSetEventUpdate;
+}
+
+export interface SparseSetEventUpdate {
+  bucketId: number;
+  newRoot: bigint;
+}
+
+export interface TonWithdrawEvent {
+  kind: "ton-withdraw";
+  nullifierHash: bigint;
+  recipient: string;
+  payout: bigint;
+  sparseUpdate: SparseSetEventUpdate;
+}
+
+export interface JettonWithdrawalAcceptedEvent {
+  kind: "jetton-withdraw";
+  clientQueryId: bigint;
+  nullifierHash: bigint;
+  recipient: string;
+  payout: bigint;
+  sparseUpdate: SparseSetEventUpdate;
 }
 
 export interface Groth16Proof {

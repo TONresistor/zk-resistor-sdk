@@ -2,7 +2,7 @@ import * as Pool from "../pool.js";
 import * as TonPool from "../ton-pool.js";
 import { buildZkProofCell } from "../crypto/bls.js";
 import type { Poseidon2 } from "../crypto/poseidon.js";
-import { insertWitness } from "../merkle.js";
+import { insertWitnessFromPath } from "../merkle.js";
 import {
   buildDepositJetton,
   buildDepositPayloadCell,
@@ -14,10 +14,11 @@ import { generateSecrets, serializeNote } from "../note.js";
 import type { Prover } from "../prove.js";
 import type { Client } from "../client.js";
 import type { Note } from "../types.js";
+import type { MerkleStateProvider } from "../state-provider.js";
 
 export type DepositPhase =
   | "reading-pool"
-  | "rebuilding-tree"
+  | "syncing-state"
   | "computing-witness"
   | "generating-proof"
   | "building-transaction";
@@ -29,6 +30,7 @@ export interface DepositOptions {
   denomination: bigint;
   userAddress: string;
   userJettonWallet?: string;
+  stateProvider: MerkleStateProvider;
 }
 
 export interface DepositPrep {
@@ -54,15 +56,28 @@ export async function prepareDeposit(
     opts.kind === "ton"
       ? await TonPool.readState(client, opts.poolAddress)
       : await Pool.readState(client, opts.poolAddress);
-
   if (state.denomination !== opts.denomination) {
     throw new Error(
       `Pool denomination ${state.denomination} != expected ${opts.denomination}`,
     );
   }
-  if (opts.kind === "jetton" && !("jettonWallet" in state)) {
-    throw new Error("Pool state missing jettonWallet (pool not initialized?)");
+  if (
+    opts.kind === "jetton" &&
+    (!("jettonWallet" in state) || state.jettonWallet === null)
+  ) {
+    throw new Error("Jetton pool is not ready: jettonWallet is not bound");
   }
+  if (opts.kind === "jetton" && !opts.userJettonWallet) {
+    throw new Error("userJettonWallet required for jetton deposit");
+  }
+  const target = opts.kind === "ton"
+    ? TonPool.syncTargetFromState(opts.poolAddress, state as Awaited<
+        ReturnType<typeof TonPool.readState>
+      >)
+    : Pool.syncTargetFromState(opts.poolAddress, state as Awaited<
+        ReturnType<typeof Pool.readState>
+      >);
+  await opts.stateProvider.sync(target);
 
   const { nullifier, secret } = generateSecrets();
   const note: Note = {
@@ -71,6 +86,8 @@ export async function prepareDeposit(
     leafIndex: state.nextIndex,
     nullifier,
     secret,
+    poolAddress: opts.poolAddress,
+    poolKind: opts.kind,
   };
 
   return {
@@ -109,19 +126,31 @@ export async function finalizeDeposit(
   ) {
     throw new Error("Pool state changed. Regenerate the secret.");
   }
-
-  log("rebuilding-tree", `${state.nextIndex} existing deposits`);
-  const events =
-    state.nextIndex === 0
-      ? []
-      : await Pool.fetchDepositCommitments(client, prep.opts.poolAddress);
-  const existingLeaves: bigint[] = [];
-  for (const e of events) existingLeaves[e.leafIndex] = e.commitment;
+  if (
+    prep.opts.kind === "jetton" &&
+    (!("jettonWallet" in state) || state.jettonWallet === null)
+  ) {
+    throw new Error("Jetton pool is not ready: jettonWallet is not bound");
+  }
 
   log("computing-witness");
   const commitment = await poseidon2(prep.note.nullifier, prep.note.secret);
-  const witness = await insertWitness(poseidon2, {
-    existingLeaves,
+  log("syncing-state", `${state.nextIndex} deposits checkpointed`);
+  const target = prep.opts.kind === "ton"
+    ? TonPool.syncTargetFromState(prep.opts.poolAddress, state as Awaited<
+        ReturnType<typeof TonPool.readState>
+      >)
+    : Pool.syncTargetFromState(prep.opts.poolAddress, state as Awaited<
+        ReturnType<typeof Pool.readState>
+      >);
+  await prep.opts.stateProvider.sync(target);
+  const [insertPath, commitmentWitness] = await Promise.all([
+    prep.opts.stateProvider.insertionPath(state.nextIndex),
+    prep.opts.stateProvider.sparseSetWitness("commitment", commitment),
+  ]);
+  const witness = await insertWitnessFromPath(poseidon2, {
+    currentRoot: insertPath.currentRoot,
+    path: insertPath.path,
     commitment,
     leafIndex: state.nextIndex,
   });
@@ -145,6 +174,7 @@ export async function finalizeDeposit(
       commitment,
       newRoot: BigInt(witness.newRoot),
       proofCell,
+      commitmentSetProof: commitmentWitness.proof,
     });
     message = buildDepositTon({
       poolAddress: prep.opts.poolAddress,
@@ -160,6 +190,7 @@ export async function finalizeDeposit(
       commitment,
       newRoot: BigInt(witness.newRoot),
       proofCell,
+      commitmentSetProof: commitmentWitness.proof,
     });
     message = buildDepositJetton({
       userJettonWallet: prep.opts.userJettonWallet,

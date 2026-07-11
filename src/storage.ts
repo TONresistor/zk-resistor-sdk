@@ -10,11 +10,13 @@ export interface JettonPoolStorage {
   denomination: bigint;
   jettonWallet: string | null;
   relayerReserve: bigint;
+  withdrawalCount: number;
   nextIndex: number;
   currentRoot: bigint;
 }
 
-// Storage: refs [identity, merkle]; bits [jettonWallet:address?, relayerReserve:coins].
+// Current storage refs: [identity, merkle].
+// Current bits: [jettonWallet:address?, relayerReserve:coins, withdrawalCount:uint32].
 // identity: jettonMaster:address, factory:address, denomination:coins.
 // merkle:   nextIndex:uint32, currentRoot:uint256, then three dicts (unread).
 export function parseJettonPoolStorage(dataB64: string): JettonPoolStorage {
@@ -23,6 +25,10 @@ export function parseJettonPoolStorage(dataB64: string): JettonPoolStorage {
   const merkle = main.loadRef().beginParse();
   const jettonWallet = main.loadMaybeAddress();
   const relayerReserve = main.loadCoins();
+  const withdrawalCount = main.loadUint(32);
+  if (main.remainingBits !== 0 || main.remainingRefs !== 0) {
+    throw new Error("Jetton pool storage contains trailing data");
+  }
   const jettonMaster = identity.loadAddress();
   const factory = identity.loadAddress();
   const denomination = identity.loadCoins();
@@ -35,6 +41,7 @@ export function parseJettonPoolStorage(dataB64: string): JettonPoolStorage {
     jettonWallet:
       jettonWallet instanceof Address ? fmtAddr(jettonWallet) : null,
     relayerReserve,
+    withdrawalCount,
     nextIndex,
     currentRoot,
   };

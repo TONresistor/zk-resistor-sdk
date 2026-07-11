@@ -1,13 +1,118 @@
 import { Address, beginCell, Cell, Dictionary } from "@ton/core";
 import { TREE_CAPACITY } from "./constants.js";
 import type { Client } from "./client.js";
-import { readBigInt, readAddrFromB64 } from "./stack.js";
+import {
+  assertRunMethodSuccess,
+  readBoolean,
+  readAddrFromB64,
+  readUintNumber,
+} from "./stack.js";
 import { parseJettonPoolStorage, parseTonPoolStorage } from "./storage.js";
 import type { JettonPoolInfo, PoolInfo, TonPoolInfo } from "./types.js";
 
-interface FactoryRegistries {
+export interface FactoryRegistries {
   jettonPools: string[];
   tonPools: string[];
+}
+
+export interface FactoryStorage extends FactoryRegistries {
+  poolCodeHash: string;
+  tonPoolCodeHash: string;
+  poolCount: number;
+  tonPoolCount: number;
+  inFlightCreates: number;
+  jettonCreateSenders: ReadonlyMap<string, string>;
+  tonCreateSenders: ReadonlyMap<string, string>;
+}
+
+const ADDRESS_FORMAT = { urlSafe: true, bounceable: true } as const;
+
+export function parseFactoryStorage(dataB64: string): FactoryStorage {
+  const root = Cell.fromBase64(dataB64);
+  if (root.isExotic || root.bits.length !== 32 + 32 + 16 || root.refs.length !== 3) {
+    throw new Error("FactoryStorage root is not canonical");
+  }
+  const storage = root.beginParse();
+  const codesCell = storage.loadRef();
+  const poolCount = storage.loadUint(32);
+  const tonPoolCount = storage.loadUint(32);
+  const inFlightCreates = storage.loadUint(16);
+  const registriesCell = storage.loadRef();
+  const createSendersCell = storage.loadRef();
+  if (storage.remainingBits !== 0 || storage.remainingRefs !== 0) {
+    throw new Error("FactoryStorage contains trailing data");
+  }
+
+  if (codesCell.isExotic || codesCell.bits.length !== 0 || codesCell.refs.length !== 2) {
+    throw new Error("FactoryCodes is not canonical");
+  }
+  const codes = codesCell.beginParse();
+  const poolCode = codes.loadRef();
+  const tonPoolCode = codes.loadRef();
+  if (codes.remainingBits !== 0 || codes.remainingRefs !== 0) {
+    throw new Error("FactoryCodes contains trailing data");
+  }
+
+  const registries = registriesCell.beginParse();
+  const jettonRegistry = registries.loadDict(
+    Dictionary.Keys.BigUint(256),
+    Dictionary.Values.Address(),
+  );
+  const poolAddressToKey = registries.loadDict(
+    Dictionary.Keys.Address(),
+    Dictionary.Values.BigUint(256),
+  );
+  const tonRegistry = registries.loadDict(
+    Dictionary.Keys.BigUint(256),
+    Dictionary.Values.Address(),
+  );
+  const tonPoolAddressToKey = registries.loadDict(
+    Dictionary.Keys.Address(),
+    Dictionary.Values.BigUint(256),
+  );
+  if (registries.remainingBits !== 0 || registries.remainingRefs !== 0) {
+    throw new Error("Factory registries contain trailing data");
+  }
+
+  const senders = createSendersCell.beginParse();
+  const jettonSenders = senders.loadDict(
+    Dictionary.Keys.Address(),
+    Dictionary.Values.Address(),
+  );
+  const tonSenders = senders.loadDict(
+    Dictionary.Keys.Address(),
+    Dictionary.Values.Address(),
+  );
+  if (senders.remainingBits !== 0 || senders.remainingRefs !== 0) {
+    throw new Error("Factory createSenders contains trailing data");
+  }
+
+  if (
+    jettonRegistry.size !== poolCount ||
+    tonRegistry.size !== tonPoolCount ||
+    poolAddressToKey.size !== jettonSenders.size ||
+    tonPoolAddressToKey.size !== tonSenders.size ||
+    poolAddressToKey.size + tonPoolAddressToKey.size !== inFlightCreates
+  ) {
+    throw new Error("FactoryStorage counters do not match their registries");
+  }
+
+  const fmt = (address: Address) => address.toString(ADDRESS_FORMAT);
+  return {
+    poolCodeHash: poolCode.hash().toString("hex"),
+    tonPoolCodeHash: tonPoolCode.hash().toString("hex"),
+    poolCount,
+    tonPoolCount,
+    inFlightCreates,
+    jettonPools: Array.from(jettonRegistry.values()).map(fmt),
+    tonPools: Array.from(tonRegistry.values()).map(fmt),
+    jettonCreateSenders: new Map(
+      Array.from(jettonSenders).map(([pool, creator]) => [fmt(pool), fmt(creator)]),
+    ),
+    tonCreateSenders: new Map(
+      Array.from(tonSenders).map(([pool, creator]) => [fmt(pool), fmt(creator)]),
+    ),
+  };
 }
 
 export async function readRegistries(
@@ -18,30 +123,10 @@ export async function readRegistries(
   if (acc.status !== "active" || !acc.data) {
     return { jettonPools: [], tonPools: [] };
   }
-  // FactoryStorage: refs [poolCode, tonPoolCode, registries];
-  // bits [poolCount:uint32, tonPoolCount:uint32].
-  const cs = Cell.fromBase64(acc.data).beginParse();
-  cs.loadRef();
-  cs.loadRef();
-  cs.loadUint(32);
-  cs.loadUint(32);
-  // Registries sub-cell holds four dicts; only the two forward registries
-  // (key -> pool address) are needed to enumerate.
-  const reg = cs.loadRef().beginParse();
-  const jettonRegistry = reg.loadDict(
-    Dictionary.Keys.BigUint(256),
-    Dictionary.Values.Address(),
-  );
-  reg.loadDict(Dictionary.Keys.Address(), Dictionary.Values.BigUint(256));
-  const tonRegistry = reg.loadDict(
-    Dictionary.Keys.BigUint(256),
-    Dictionary.Values.Address(),
-  );
-
-  const fmt = (a: Address) => a.toString({ urlSafe: true, bounceable: true });
+  const storage = parseFactoryStorage(acc.data);
   return {
-    jettonPools: Array.from(jettonRegistry.values()).map(fmt),
-    tonPools: Array.from(tonRegistry.values()).map(fmt),
+    jettonPools: storage.jettonPools,
+    tonPools: storage.tonPools,
   };
 }
 
@@ -183,6 +268,7 @@ export async function expectedPoolAddress(
     addressSliceArg(jettonMaster),
     denomination.toString(),
   ]);
+  assertRunMethodSuccess(r, "expectedPoolAddress");
   const addr = readAddrFromB64(r.stack[0] ?? null);
   if (!addr) throw new Error("expectedPoolAddress: factory returned no address");
   return addr;
@@ -198,6 +284,7 @@ export async function poolAddressFor(
     addressSliceArg(jettonMaster),
     denomination.toString(),
   ]);
+  assertRunMethodSuccess(r, "poolAddressFor");
   return readAddrFromB64(r.stack[0] ?? null);
 }
 
@@ -209,6 +296,7 @@ export async function expectedTonPoolAddress(
   const r = await client.runMethod(factoryAddress, "expectedTonPoolAddress", [
     denomination.toString(),
   ]);
+  assertRunMethodSuccess(r, "expectedTonPoolAddress");
   const addr = readAddrFromB64(r.stack[0] ?? null);
   if (!addr)
     throw new Error("expectedTonPoolAddress: factory returned no address");
@@ -223,6 +311,7 @@ export async function tonPoolAddressFor(
   const r = await client.runMethod(factoryAddress, "tonPoolAddressFor", [
     denomination.toString(),
   ]);
+  assertRunMethodSuccess(r, "tonPoolAddressFor");
   return readAddrFromB64(r.stack[0] ?? null);
 }
 
@@ -231,7 +320,8 @@ export async function poolCount(
   factoryAddress: string,
 ): Promise<number> {
   const r = await client.runMethod(factoryAddress, "poolCount", []);
-  return Number(readBigInt(r.stack[0] ?? null));
+  assertRunMethodSuccess(r, "poolCount");
+  return readUintNumber(r.stack[0] ?? null, 32, "poolCount");
 }
 
 export async function tonPoolCount(
@@ -239,5 +329,82 @@ export async function tonPoolCount(
   factoryAddress: string,
 ): Promise<number> {
   const r = await client.runMethod(factoryAddress, "tonPoolCount", []);
-  return Number(readBigInt(r.stack[0] ?? null));
+  assertRunMethodSuccess(r, "tonPoolCount");
+  return readUintNumber(r.stack[0] ?? null, 32, "tonPoolCount");
+}
+
+export async function totalPoolCount(
+  client: Client,
+  factoryAddress: string,
+): Promise<number> {
+  const r = await client.runMethod(factoryAddress, "totalPoolCount", []);
+  assertRunMethodSuccess(r, "totalPoolCount");
+  return readUintNumber(r.stack[0] ?? null, 32, "totalPoolCount");
+}
+
+export async function inFlightCreateCount(
+  client: Client,
+  factoryAddress: string,
+): Promise<number> {
+  const r = await client.runMethod(factoryAddress, "inFlightCreateCount", []);
+  assertRunMethodSuccess(r, "inFlightCreateCount");
+  return readUintNumber(r.stack[0] ?? null, 16, "inFlightCreateCount");
+}
+
+export async function maxFactoryPools(
+  client: Client,
+  factoryAddress: string,
+): Promise<number> {
+  const r = await client.runMethod(factoryAddress, "maxFactoryPools", []);
+  assertRunMethodSuccess(r, "maxFactoryPools");
+  return readUintNumber(r.stack[0] ?? null, 32, "maxFactoryPools");
+}
+
+export async function maxInFlightCreates(
+  client: Client,
+  factoryAddress: string,
+): Promise<number> {
+  const r = await client.runMethod(factoryAddress, "maxInFlightCreates", []);
+  assertRunMethodSuccess(r, "maxInFlightCreates");
+  return readUintNumber(r.stack[0] ?? null, 16, "maxInFlightCreates");
+}
+
+export async function pendingCreateSender(
+  client: Client,
+  factoryAddress: string,
+  poolAddress: string,
+): Promise<string | null> {
+  const r = await client.runMethod(factoryAddress, "pendingCreateSender", [
+    addressSliceArg(poolAddress),
+  ]);
+  assertRunMethodSuccess(r, "pendingCreateSender");
+  return readAddrFromB64(r.stack[0] ?? null);
+}
+
+export async function poolDeploymentPending(
+  client: Client,
+  factoryAddress: string,
+  jettonMaster: string,
+  denomination: bigint,
+): Promise<boolean> {
+  const r = await client.runMethod(factoryAddress, "poolDeploymentPending", [
+    addressSliceArg(jettonMaster),
+    denomination.toString(),
+  ]);
+  assertRunMethodSuccess(r, "poolDeploymentPending");
+  return readBoolean(r.stack[0] ?? null);
+}
+
+export async function tonPoolDeploymentPending(
+  client: Client,
+  factoryAddress: string,
+  denomination: bigint,
+): Promise<boolean> {
+  const r = await client.runMethod(
+    factoryAddress,
+    "tonPoolDeploymentPending",
+    [denomination.toString()],
+  );
+  assertRunMethodSuccess(r, "tonPoolDeploymentPending");
+  return readBoolean(r.stack[0] ?? null);
 }

@@ -89,6 +89,58 @@ export async function insertWitness(
   };
 }
 
+async function foldPath(
+  poseidon2: Poseidon2,
+  leaf: bigint,
+  path: MerklePath,
+): Promise<bigint> {
+  let node = leaf;
+  for (let level = 0; level < path.pathElements.length; level += 1) {
+    const sibling = path.pathElements[level];
+    const direction = path.pathIndices[level];
+    if (sibling === undefined || (direction !== 0 && direction !== 1)) {
+      throw new RangeError(`invalid Merkle path at level ${level}`);
+    }
+    node = direction === 0
+      ? await poseidon2(node, sibling)
+      : await poseidon2(sibling, node);
+  }
+  return node;
+}
+
+export async function insertWitnessFromPath(
+  poseidon2: Poseidon2,
+  opts: {
+    currentRoot: bigint;
+    commitment: bigint;
+    leafIndex: number;
+    path: MerklePath;
+    depth?: number;
+  },
+): Promise<InsertWitness> {
+  const depth = opts.depth ?? TREE_DEPTH;
+  if (
+    opts.path.pathElements.length !== depth ||
+    opts.path.pathIndices.length !== depth
+  ) {
+    throw new RangeError(`insertion path must contain exactly ${depth} levels`);
+  }
+  const zeros = await emptyZeros(poseidon2, depth);
+  const oldRoot = await foldPath(poseidon2, zeros[0] as bigint, opts.path);
+  if (oldRoot !== opts.currentRoot) {
+    throw new Error("insertion path does not match the current pool root");
+  }
+  const newRoot = await foldPath(poseidon2, opts.commitment, opts.path);
+  return {
+    oldRoot: oldRoot.toString(),
+    newRoot: newRoot.toString(),
+    commitment: opts.commitment.toString(),
+    leafIndex: opts.leafIndex.toString(),
+    pathElements: opts.path.pathElements.map((value) => value.toString()),
+    zeros: zeros.slice(0, depth).map((value) => value.toString()),
+  };
+}
+
 export async function withdrawWitness(
   poseidon2: Poseidon2,
   opts: {
@@ -117,5 +169,41 @@ export async function withdrawWitness(
     secret: opts.secret.toString(),
     pathElements: path.pathElements.map((x) => x.toString()),
     pathIndices: path.pathIndices.map((x) => x.toString()),
+  };
+}
+
+export async function withdrawWitnessFromPath(
+  poseidon2: Poseidon2,
+  opts: {
+    currentRoot: bigint;
+    leafIndex: number;
+    path: MerklePath;
+    nullifier: bigint;
+    secret: bigint;
+    recipient: bigint;
+    depth?: number;
+  },
+): Promise<WithdrawWitness> {
+  const depth = opts.depth ?? TREE_DEPTH;
+  if (
+    opts.path.pathElements.length !== depth ||
+    opts.path.pathIndices.length !== depth
+  ) {
+    throw new RangeError(`membership path must contain exactly ${depth} levels`);
+  }
+  const commitment = await poseidon2(opts.nullifier, opts.secret);
+  const root = await foldPath(poseidon2, commitment, opts.path);
+  if (root !== opts.currentRoot) {
+    throw new Error("membership path does not match the current pool root");
+  }
+  const nullifierHash = await poseidon2(opts.nullifier, 0n);
+  return {
+    root: root.toString(),
+    nullifierHash: nullifierHash.toString(),
+    recipient: opts.recipient.toString(),
+    nullifier: opts.nullifier.toString(),
+    secret: opts.secret.toString(),
+    pathElements: opts.path.pathElements.map((value) => value.toString()),
+    pathIndices: opts.path.pathIndices.map((value) => value.toString()),
   };
 }

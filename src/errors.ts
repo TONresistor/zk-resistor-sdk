@@ -11,6 +11,7 @@ export const Errors = {
   TreeFull: 114,
   InvalidInsertProof: 115,
   InsufficientDepositValue: 116,
+  InvalidDepositPayload: 117,
   InsufficientGas: 120,
   UnknownRoot: 121,
   NullifierAlreadySpent: 122,
@@ -18,9 +19,16 @@ export const Errors = {
   InsufficientReserve: 127,
   InsufficientBalance: 128,
   InvalidRecipient: 130,
+  StaleSparseSetRoot: 133,
+  InvalidSparseSetProof: 134,
+  WithdrawalCapacityReached: 135,
   PoolAlreadyExists: 200,
   InvalidDenomination: 202,
   InsufficientCreatePoolFee: 203,
+  FactoryCapacityReached: 204,
+  TooManyInFlightCreates: 205,
+  InvalidPoolConfirmation: 206,
+  FactoryInvariantViolation: 207,
 } as const;
 
 export type ErrorName = keyof typeof Errors;
