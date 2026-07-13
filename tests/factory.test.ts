@@ -10,9 +10,7 @@ const TON_POOL = Address.parse(FACTORY);
 
 const fmt = (a: Address) => a.toString({ urlSafe: true, bounceable: true });
 
-// Builds a FactoryStorage cell in the exact ref/bit order the Tolk contract
-// uses; this layout is what readRegistries is verified against.
-function mockFactoryData(jettonPools: Address[], tonPools: Address[]): string {
+function mockFactoryDataV200(jettonPools: Address[], tonPools: Address[]): string {
   const poolReg = Dictionary.empty(
     Dictionary.Keys.BigUint(256),
     Dictionary.Values.Address(),
@@ -71,6 +69,49 @@ function mockFactoryData(jettonPools: Address[], tonPools: Address[]): string {
     .toString("base64");
 }
 
+function mockFactoryDataV201(
+  jettonPools: Address[],
+  pendingJettonPools: Address[],
+  tonPools: Address[],
+  pendingTonPools: Address[],
+): string {
+  const poolReg = Dictionary.empty(
+    Dictionary.Keys.BigUint(256),
+    Dictionary.Values.Address(),
+  );
+  const tonReg = Dictionary.empty(
+    Dictionary.Keys.BigUint(256),
+    Dictionary.Values.Address(),
+  );
+  const jettonSenders = Dictionary.empty(
+    Dictionary.Keys.Address(),
+    Dictionary.Values.Address(),
+  );
+  const tonSenders = Dictionary.empty(
+    Dictionary.Keys.Address(),
+    Dictionary.Values.Address(),
+  );
+  jettonPools.forEach((address, index) => poolReg.set(BigInt(index + 1), address));
+  tonPools.forEach((address, index) => tonReg.set(BigInt(index + 1), address));
+  pendingJettonPools.forEach((address) => jettonSenders.set(address, TON_POOL));
+  pendingTonPools.forEach((address) => tonSenders.set(address, TON_POOL));
+
+  const codes = beginCell()
+    .storeRef(beginCell().storeUint(1, 1).endCell())
+    .storeRef(beginCell().storeUint(2, 2).endCell())
+    .endCell();
+  return beginCell()
+    .storeRef(codes)
+    .storeUint(jettonPools.length + pendingJettonPools.length, 32)
+    .storeUint(tonPools.length + pendingTonPools.length, 32)
+    .storeUint(pendingJettonPools.length + pendingTonPools.length, 16)
+    .storeRef(beginCell().storeDict(poolReg).storeDict(tonReg).endCell())
+    .storeRef(beginCell().storeDict(jettonSenders).storeDict(tonSenders).endCell())
+    .endCell()
+    .toBoc()
+    .toString("base64");
+}
+
 function mockClient(acc: AccountState): Client {
   return {
     async getAccountState() {
@@ -86,10 +127,10 @@ function mockClient(acc: AccountState): Client {
 }
 
 describe("readRegistries", () => {
-  it("parses jetton and TON pool addresses", async () => {
+  it("keeps reading 2.0.0 registries", async () => {
     const client = mockClient({
       status: "active",
-      data: mockFactoryData([POOL_A, POOL_B], [TON_POOL]),
+      data: mockFactoryDataV200([POOL_A, POOL_B], [TON_POOL]),
     });
     const r = await readRegistries(client, FACTORY);
     expect(r.jettonPools).toHaveLength(2);
@@ -98,9 +139,25 @@ describe("readRegistries", () => {
     expect(r.tonPools).toEqual([fmt(TON_POOL)]);
   });
 
+  it("returns only active 2.0.1 Pools", async () => {
+    const data = mockFactoryDataV201([POOL_A], [POOL_B], [TON_POOL], []);
+    const client = mockClient({ status: "active", data });
+    const registries = await readRegistries(client, FACTORY);
+    expect(registries).toEqual({
+      jettonPools: [fmt(POOL_A)],
+      tonPools: [fmt(TON_POOL)],
+    });
+
+    const parsed = parseFactoryStorage(data);
+    expect(parsed.poolCount).toBe(2);
+    expect(parsed.tonPoolCount).toBe(1);
+    expect(parsed.inFlightCreates).toBe(1);
+    expect(parsed.jettonCreateSenders.get(fmt(POOL_B))).toBe(fmt(TON_POOL));
+  });
+
   it("decodes the exact code bundle, counters and sub-cells", () => {
     const parsed = parseFactoryStorage(
-      mockFactoryData([POOL_A, POOL_B], [TON_POOL]),
+      mockFactoryDataV201([POOL_A, POOL_B], [], [TON_POOL], []),
     );
     expect(parsed.poolCount).toBe(2);
     expect(parsed.tonPoolCount).toBe(1);
@@ -127,7 +184,7 @@ describe("readRegistries", () => {
   it("handles an empty factory", async () => {
     const client = mockClient({
       status: "active",
-      data: mockFactoryData([], []),
+      data: mockFactoryDataV201([], [], [], []),
     });
     const r = await readRegistries(client, FACTORY);
     expect(r).toEqual({ jettonPools: [], tonPools: [] });

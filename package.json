@@ -1,6 +1,6 @@
 {
   "name": "@tonresistor/zkresistor-sdk",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "TypeScript SDK for ZKResistor, a trustless ZK privacy pool on TON. Builds messages, generates proofs, reads pool state.",
   "license": "MIT",
   "type": "module",
@@ -33,6 +33,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc --noEmit",
+    "prepare": "npm run build",
     "prepublishOnly": "npm run lint && npm run test && npm run build",
     "bench:snapshot-1m": "npm run build && node benchmarks/compact-snapshot-1m.mjs"
   },

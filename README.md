@@ -12,7 +12,7 @@ pool policy.
 Requires Node.js 20.19 or newer.
 
 ```bash
-npm install @tonresistor/zkresistor-sdk@2.0.0 @ton/core
+npm install @tonresistor/zkresistor-sdk@2.0.1 @ton/core
 ```
 
 ## Select Pools

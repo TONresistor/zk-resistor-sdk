@@ -58,18 +58,37 @@ export function parseFactoryStorage(dataB64: string): FactoryStorage {
     Dictionary.Keys.BigUint(256),
     Dictionary.Values.Address(),
   );
-  const poolAddressToKey = registries.loadDict(
+  let poolAddressToKey = Dictionary.empty(
     Dictionary.Keys.Address(),
     Dictionary.Values.BigUint(256),
   );
-  const tonRegistry = registries.loadDict(
-    Dictionary.Keys.BigUint(256),
-    Dictionary.Values.Address(),
-  );
-  const tonPoolAddressToKey = registries.loadDict(
+  let tonPoolAddressToKey = Dictionary.empty(
     Dictionary.Keys.Address(),
     Dictionary.Values.BigUint(256),
   );
+  let tonRegistry: Dictionary<bigint, Address>;
+  const legacyRegistries = registriesCell.bits.length === 4;
+  if (legacyRegistries) {
+    poolAddressToKey = registries.loadDict(
+      Dictionary.Keys.Address(),
+      Dictionary.Values.BigUint(256),
+    );
+    tonRegistry = registries.loadDict(
+      Dictionary.Keys.BigUint(256),
+      Dictionary.Values.Address(),
+    );
+    tonPoolAddressToKey = registries.loadDict(
+      Dictionary.Keys.Address(),
+      Dictionary.Values.BigUint(256),
+    );
+  } else if (registriesCell.bits.length === 2) {
+    tonRegistry = registries.loadDict(
+      Dictionary.Keys.BigUint(256),
+      Dictionary.Values.Address(),
+    );
+  } else {
+    throw new Error("Factory registries layout is not supported");
+  }
   if (registries.remainingBits !== 0 || registries.remainingRefs !== 0) {
     throw new Error("Factory registries contain trailing data");
   }
@@ -87,12 +106,17 @@ export function parseFactoryStorage(dataB64: string): FactoryStorage {
     throw new Error("Factory createSenders contains trailing data");
   }
 
+  const legacyCountersMatch =
+    jettonRegistry.size === poolCount &&
+    tonRegistry.size === tonPoolCount &&
+    poolAddressToKey.size === jettonSenders.size &&
+    tonPoolAddressToKey.size === tonSenders.size;
+  const currentCountersMatch =
+    jettonRegistry.size + jettonSenders.size === poolCount &&
+    tonRegistry.size + tonSenders.size === tonPoolCount;
   if (
-    jettonRegistry.size !== poolCount ||
-    tonRegistry.size !== tonPoolCount ||
-    poolAddressToKey.size !== jettonSenders.size ||
-    tonPoolAddressToKey.size !== tonSenders.size ||
-    poolAddressToKey.size + tonPoolAddressToKey.size !== inFlightCreates
+    (legacyRegistries ? !legacyCountersMatch : !currentCountersMatch) ||
+    jettonSenders.size + tonSenders.size !== inFlightCreates
   ) {
     throw new Error("FactoryStorage counters do not match their registries");
   }
